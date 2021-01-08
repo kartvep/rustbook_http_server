@@ -65,11 +65,19 @@ fn handle_connection(mut stream: TcpStream) {
 
     let contents = fs::read_to_string("hello.html").unwrap();
 
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
-        contents.len(),
-        contents,
-    );
+    let response = match &request.method[..] {
+        "GET" => {
+            match &request.path[..] {
+                "/" | "/hello.html" | "/index.html" => format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                    contents.len(),
+                    contents,
+                ),
+                _ => format!("HTTP/1.1 404 Not found\r\n\r\nNot found"),
+            }
+        },
+        _ => format!("HTTP/1.1 501 Not Implemented\r\n\r\n"),
+    };
     stream.write(response.as_bytes()).unwrap();
     stream.flush().unwrap();
 }
