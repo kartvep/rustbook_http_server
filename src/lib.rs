@@ -3,7 +3,7 @@ use std::sync::{mpsc, Arc, Mutex};
 
 pub struct ThreadPool{
     workers: Vec<Worker>,
-    sender: mpsc::Sender<Job>,
+    sender: mpsc::Sender<Message>,
 }
 
 impl ThreadPool {
@@ -23,34 +23,62 @@ impl ThreadPool {
         ThreadPool{workers, sender}
     }
 
-    pub fn execute<T>(&mut self, job: T )
+    pub fn execute<J>(&mut self, job: J )
     where
-        T: FnOnce() + Send + 'static,
+        J: FnOnce() + Send + 'static,
     {
-        let job = Box::new(job);
+        let job = Message::NewJob(Box::new(job));
         self.sender.send(job).unwrap();
+    }
+}
+
+impl Drop for ThreadPool {
+    fn drop(&mut self) {
+        for _ in &self.workers {
+            self.sender.send(Message::Terminate).unwrap();
+        }
+
+        for worker in &mut self.workers {
+
+            match worker.thread.take() {
+                Some(thread) => {
+                    println!("Shutting down worker {}", worker.id);
+                    thread.join().unwrap();
+                },
+                _ => println!("No thread handler owned by worker {}", worker.id),
+            }
+        }
     }
 }
 
 struct Worker {
     id: usize,
-    join_handle: thread::JoinHandle<()>,
+    thread: Option<thread::JoinHandle<()>>,
 }
 
 impl Worker {
-    fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Job>>>) -> Worker {
-        let thread = thread::spawn(move || {
-            loop {
-                let job = receiver.lock().unwrap().recv().unwrap();
-
-                println!("Worker {} got a job!", id);
-                
-                job();
+    fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Message>>>) -> Worker {
+        let thread = Some(thread::spawn(move || loop {
+            let message = receiver.lock().unwrap().recv().unwrap();
+            match message {
+                Message::NewJob(job) => {
+                    println!("Worker {} got a job!", id);
+                    job();
+                },
+                Message::Terminate => {
+                    println!("Worker {} got terminate signal", id);
+                    break;
+                },
             }
-        });
+        }));
 
-        Worker{ id, join_handle: thread }
+        Worker{ id, thread }
     }
 }
 
 type Job = Box<dyn FnOnce() + Send + 'static>; 
+
+enum Message {
+    NewJob(Job),
+    Terminate,
+}

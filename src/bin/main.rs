@@ -12,7 +12,7 @@ fn main() {
     let listener = TcpListener::bind("[::]:7878").unwrap();
     let mut pool = ThreadPool::new(4);
 
-    for stream in listener.incoming() {
+    for stream in listener.incoming().take(2) {
         let stream = stream.unwrap();
 
         println!("Got connection");
