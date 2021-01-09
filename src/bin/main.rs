@@ -1,6 +1,8 @@
 use std::fs;
+use std::io;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering}; 
 use std::thread;
@@ -15,7 +17,16 @@ fn main() {
     let sigint_count = Arc::new(AtomicUsize::new(0));
     let sigint_count_thread = Arc::clone(&sigint_count);
     let listener = TcpListener::bind("[::]:7878").unwrap();
+    listener.set_nonblocking(true).expect("Cannot set non-blocking");
+
+    let mut epoll_events = epoll::Events::empty();
+    epoll_events.insert(epoll::Events::EPOLLET);
+    epoll_events.insert(epoll::Events::EPOLLIN);
+    epoll_events.insert(epoll::Events::EPOLLONESHOT);
+    println!("{:?}", epoll_events);
+
     let mut pool = ThreadPool::new(4);
+    let queue = epoll::create(true).unwrap();
 
     thread::spawn(move || {
         for s in signals.forever() {
@@ -35,16 +46,42 @@ fn main() {
         signals.handle().close();
     });
 
+    let mut _events = Vec::new();
+    _events.resize_with(10, || {
+        epoll::Event::new(epoll::Events::empty(), 1)
+    });
+    epoll::ctl(
+        queue,
+        epoll::ControlOptions::EPOLL_CTL_ADD,
+        listener.as_raw_fd(),
+        epoll::Event::new(epoll_events, 1),
+    ).expect("Failed to readd listener to epoll");
     for stream in listener.incoming() {
-        let stream = stream.unwrap();
         if sigint_count.load(Ordering::Relaxed) != 0 {
-            break
+            break;
         }
 
-        println!("Got connection");
-        pool.execute(|| {
-            handle_connection(stream);
-        });
+        let epoll_events = epoll_events.clone();
+
+        match stream {
+            Ok(stream) => {
+                println!("Got connection");
+                pool.execute(|| {
+                    handle_connection(stream);
+                });
+            },
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                println!("Got err! {:?}", e);
+                epoll::ctl(
+                    queue,
+                    epoll::ControlOptions::EPOLL_CTL_MOD,
+                    listener.as_raw_fd(),
+                    epoll::Event::new(epoll_events, 1),
+                ).expect("Failed to readd listener to epoll");
+                epoll::wait(queue, -1, &mut _events).unwrap();
+            },
+            _ => panic!("Bad stream"),
+        }
     }
 }
 
