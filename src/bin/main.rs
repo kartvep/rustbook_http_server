@@ -1,19 +1,45 @@
-//use std::io::prelude::*;
-use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering}; 
 use std::thread;
 use std::time;
+
+use signal_hook::{iterator::Signals, consts::SIGINT};
 
 use server::ThreadPool;
 
 fn main() {
+    let mut signals = Signals::new(&[SIGINT]).unwrap();
+    let sigint_count = Arc::new(AtomicUsize::new(0));
+    let sigint_count_thread = Arc::clone(&sigint_count);
     let listener = TcpListener::bind("[::]:7878").unwrap();
     let mut pool = ThreadPool::new(4);
 
-    for stream in listener.incoming().take(2) {
+    thread::spawn(move || {
+        for s in signals.forever() {
+            match s {
+                SIGINT => {
+                    println!("Got SIGINT!");
+                    if sigint_count_thread.load(Ordering::Relaxed) == 0 {
+                        println!("Stop handling new connections! Ctrl+C again to exit immediately");
+                        sigint_count_thread.store(1, Ordering::Relaxed);
+                    } else {
+                        std::process::exit(1);
+                    }
+                },
+                _ => unreachable!(),
+            }
+        }
+        signals.handle().close();
+    });
+
+    for stream in listener.incoming() {
         let stream = stream.unwrap();
+        if sigint_count.load(Ordering::Relaxed) != 0 {
+            break
+        }
 
         println!("Got connection");
         pool.execute(|| {
@@ -23,51 +49,11 @@ fn main() {
 }
 
 fn handle_connection(mut stream: TcpStream) {
-    #[derive(Debug)]
-    struct Request {
-        method: String,
-        path: String,
-        http_ver: String,
-        headers: HashMap<String, String>,
-    }
-
     let mut buffer = [0; 1024];
 
     stream.read(&mut buffer).unwrap();
 
-    let request_str = String::from_utf8_lossy(&buffer[..]);
-    let mut request_lines = request_str
-        .split("\r\n")
-        .enumerate()
-        .map(|(n, l)| {
-            if n == 0 {
-                l.split(" ")
-            } else {
-                l.split(": ")
-            }
-        });
-
-    let mut req = request_lines.next().unwrap().map(|w| {
-        w.to_string()
-    });
-    let method = req.next().unwrap();
-    let path = req.next().unwrap();
-    let http_ver = req.next().unwrap();
-
-    let mut headers = HashMap::new();
-    for line in request_lines {
-        let line = line.collect::<Vec<&str>>();
-        if line.len() < 2 {
-            break;
-        } else {
-            headers.insert(
-                line[0].to_string(), 
-                line[1].to_string(),
-            );
-        }
-    }
-
-    let request = Request{ method, path, http_ver, headers };
+    let request = server::Request::from_buffer(&buffer);
     println!("{:?}", request);
 
     let contents = fs::read_to_string("hello.html").unwrap();

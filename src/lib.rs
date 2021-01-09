@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::thread;
 use std::sync::{mpsc, Arc, Mutex};
 
@@ -81,4 +82,51 @@ type Job = Box<dyn FnOnce() + Send + 'static>;
 enum Message {
     NewJob(Job),
     Terminate,
+}
+
+
+#[derive(Debug)]
+pub struct Request {
+    pub method: String,
+    pub path: String,
+    pub http_ver: String,
+    pub headers: HashMap<String, String>,
+}
+
+impl Request {
+    pub fn from_buffer(buffer: &[u8]) -> Request {
+        let request_str = String::from_utf8_lossy(&buffer[..]);
+        let mut request_lines = request_str
+            .split("\r\n")
+            .enumerate()
+            .map(|(n, l)| {
+                if n == 0 {
+                    l.split(" ")
+                } else {
+                    l.split(": ")
+                }
+            });
+
+        let mut req = request_lines.next().unwrap().map(|w| {
+            w.to_string()
+        });
+        let method = req.next().unwrap();
+        let path = req.next().unwrap();
+        let http_ver = req.next().unwrap();
+
+        let mut headers = HashMap::new();
+        for line in request_lines {
+            let line = line.collect::<Vec<&str>>();
+            if line.len() < 2 {
+                break;
+            } else {
+                headers.insert(
+                    line[0].to_string(),
+                    line[1].to_string(),
+                );
+            }
+        }
+
+        Request{ method, path, http_ver, headers }
+    }
 }
