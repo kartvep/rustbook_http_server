@@ -3,15 +3,22 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::thread;
+use std::time;
+
+use server::ThreadPool;
 
 fn main() {
     let listener = TcpListener::bind("[::]:7878").unwrap();
+    let mut pool = ThreadPool::new(4);
 
     for stream in listener.incoming() {
         let stream = stream.unwrap();
 
         println!("Got connection");
-        handle_connection(stream);
+        pool.execute(|| {
+            handle_connection(stream);
+        });
     }
 }
 
@@ -73,6 +80,10 @@ fn handle_connection(mut stream: TcpStream) {
                     contents.len(),
                     contents,
                 ),
+                "/sleep.html" => {
+                    thread::sleep(time::Duration::from_secs(5));
+                    format!("HTTP/1.1 200 OK\r\n\r\nToo slow")
+                },
                 _ => format!("HTTP/1.1 404 Not found\r\n\r\nNot found"),
             }
         },
